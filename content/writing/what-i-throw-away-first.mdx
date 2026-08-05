@@ -1,0 +1,11 @@
+---
+title: "What I throw away before the model ever sees it"
+stream: notes
+date: 2026-01-22
+tags: [signal-processing, eeg]
+excerpt: "Most of the effort in a signal pipeline isn't the classifier. It's deciding what not to classify."
+---
+
+Working with EEG data teaches you fast that the interesting part isn't the model — it's everything upstream of it. Raw signal is mostly noise wearing a costume: muscle artifacts, electrode drift, 60Hz hum, blink spikes that look for a moment like intent.
+
+Every hour spent tuning a classifier is worth less than an hour spent deciding what never reaches it.

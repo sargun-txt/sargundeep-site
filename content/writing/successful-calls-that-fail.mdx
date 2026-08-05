@@ -1,0 +1,27 @@
+---
+title: "The call that succeeded and did nothing"
+stream: engineering
+date: 2026-02-14
+tags: [voice-ai, production, diagnostics]
+excerpt: "A call can end cleanly and still fail the only thing that mattered — persisting a result."
+---
+
+A voice agent finishes a call. The transcript is clean. The call status says `completed`. Every log line looks healthy.
+
+And nothing got saved.
+
+That's the failure mode that's easy to miss, because every signal you're watching says success. The call didn't error. The agent didn't hang up early. The person on the other end answered every question. But somewhere between "the conversation happened" and "the outcome persisted," the chain broke — and nothing in the call-level telemetry tells you that.
+
+## Why this hides so well
+
+Most monitoring for a voice system is built around the call itself: did it connect, did it complete, how long did it take, did the agent get interrupted. Those are the questions you ask when you're worried about the *conversation*. But the conversation was never the deliverable — the persisted result was.
+
+Once you separate those two things, the fix is almost boring: treat "call completed" and "outcome persisted" as two separate states that both have to be true, and make it loud when they diverge.
+
+## What changed
+
+- Escalation paths for calls that complete without a usable outcome
+- Explicit persistence-result visibility, so a technically-successful call with no saved result shows up as a failure
+- Diagnostics that classify *why* a call didn't persist, not just that it didn't
+
+None of this required touching the agent's conversation logic. It required admitting that "the call worked" was the wrong question.
