@@ -1,5 +1,15 @@
 import type { NoteEvent } from "./engine";
-import { LOOP_SECONDS, STEPS_PER_QUARTER, BPM } from "./scale";
+import { LOOP_SECONDS, STEPS_PER_QUARTER, BPM, SCALE_MIDI } from "./scale";
+import { closeTheLoop } from "./smooth";
+
+// The VAE isn't scale-locked — it can reconstruct pitches outside our
+// pentatonic scale. Snap each one back so "nothing can sound wrong" still
+// holds after AI smoothing, not just after the rule-based pass.
+function snapToScale(midi: number): number {
+  return SCALE_MIDI.reduce((closest, m) =>
+    Math.abs(m - midi) < Math.abs(closest - midi) ? m : closest
+  );
+}
 
 // Google's free, open-source (Apache 2.0) hosted checkpoint — no key, no
 // billing, no backend of ours involved.
@@ -72,12 +82,14 @@ export async function smoothWithAI(notes: NoteEvent[]): Promise<NoteEvent[]> {
   z.dispose();
 
   const stepSeconds = 60 / BPM / STEPS_PER_QUARTER;
-  return (outSeq.notes ?? []).map((n) => ({
-    midi: n.pitch ?? 60,
+  const mapped: NoteEvent[] = (outSeq.notes ?? []).map((n) => ({
+    midi: snapToScale(n.pitch ?? 60),
     time: (n.quantizedStartStep ?? 0) * stepSeconds,
     duration: Math.max(
       0.15,
       ((n.quantizedEndStep ?? 1) - (n.quantizedStartStep ?? 0)) * stepSeconds
     ),
   }));
+
+  return closeTheLoop(mapped);
 }
