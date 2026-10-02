@@ -5,6 +5,7 @@ import { useMusic } from "@/lib/music/music-context";
 import { audioEngine } from "@/lib/music/engine";
 import { KEY_MAP, SCALE_MIDI, LOOP_SECONDS } from "@/lib/music/scale";
 import { smoothRuleBased } from "@/lib/music/smooth";
+import { isWebGLAvailable, preloadAI, smoothWithAI } from "@/lib/music/magenta";
 
 const KEY_LABELS = Object.keys(KEY_MAP);
 
@@ -15,7 +16,18 @@ export default function Instrument() {
   const [preSmoothLoop, setPreSmoothLoop] = useState<typeof state.loop | null>(
     null
   );
+  const [aiStatus, setAiStatus] = useState<
+    "idle" | "loading" | "error" | "unavailable"
+  >("idle");
   const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isWebGLAvailable()) {
+      setAiStatus("unavailable");
+      return;
+    }
+    if (state.loop.length > 0) preloadAI();
+  }, [state.loop.length]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -80,6 +92,19 @@ export default function Instrument() {
   function handleSmooth() {
     setPreSmoothLoop(state.loop);
     setLoop(smoothRuleBased(state.loop));
+  }
+
+  async function handleSmoothAI() {
+    setPreSmoothLoop(state.loop);
+    setAiStatus("loading");
+    try {
+      const smoothed = await smoothWithAI(state.loop);
+      if (smoothed.length === 0) throw new Error("empty result");
+      setLoop(smoothed);
+      setAiStatus("idle");
+    } catch {
+      setAiStatus("error");
+    }
   }
 
   function handleUndoSmooth() {
@@ -152,6 +177,22 @@ export default function Instrument() {
             >
               Smooth it out
             </button>
+            {aiStatus !== "unavailable" && (
+              <button
+                onClick={handleSmoothAI}
+                disabled={aiStatus === "loading"}
+                className="rounded-full border border-[var(--line)] px-5 py-2.5 text-sm text-[var(--ink)] disabled:opacity-50"
+                title="Round-trips your melody through an on-device AI model (Magenta) to clean it up while keeping its shape"
+              >
+                {aiStatus === "loading" ? "Thinking…" : "Smooth it out (AI)"}
+              </button>
+            )}
+            {aiStatus === "error" && (
+              <span className="font-mono-label text-[11px] text-[var(--ink-faint)]">
+                AI smoothing failed to load — try again, or use the quick
+                version
+              </span>
+            )}
             {preSmoothLoop && (
               <button
                 onClick={handleUndoSmooth}
