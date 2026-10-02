@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Space_Grotesk, Source_Serif_4, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ModeProvider } from "@/lib/mode-context";
+import { MusicProvider } from "@/lib/music/music-context";
 import Nav from "@/components/Nav";
 import Footer from "@/components/Footer";
 import Terminal from "@/components/Terminal";
@@ -38,11 +39,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col">
         <ModeProvider>
-          <div className="grain" aria-hidden="true" />
-          <Nav />
-          <main className="flex-1">{children}</main>
-          <Footer />
-          <Terminal />
+          <MusicProvider>
+            <div className="grain" aria-hidden="true" />
+            <Nav />
+            <main className="flex-1">{children}</main>
+            <Footer />
+            <Terminal />
+          </MusicProvider>
         </ModeProvider>
       </body>
     </html>

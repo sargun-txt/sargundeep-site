@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { audioEngine } from "@/lib/music/engine";
 
 type Node = {
   angle: number;
@@ -50,6 +51,7 @@ export default function SignalCore() {
 
     let t = 0;
     let raf = 0;
+    let freqData: Uint8Array | null = null;
 
     function onMove(e: PointerEvent) {
       const rect = canvas!.getBoundingClientRect();
@@ -67,6 +69,20 @@ export default function SignalCore() {
       ctx!.clearRect(0, 0, width, height);
       const cx = width / 2;
       const cy = height / 2;
+
+      let audioLevel = 0;
+      const analyser = audioEngine.getAnalyserPassive();
+      if (analyser) {
+        if (!freqData || freqData.length !== analyser.frequencyBinCount) {
+          freqData = new Uint8Array(analyser.frequencyBinCount);
+        }
+        analyser.getByteFrequencyData(
+          freqData as Uint8Array<ArrayBuffer>
+        );
+        let sum = 0;
+        for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+        audioLevel = sum / freqData.length / 255;
+      }
 
       const pull = mouse.current.active
         ? Math.min(
@@ -88,7 +104,8 @@ export default function SignalCore() {
           14 *
           Math.sin(x * freq + t * 2) *
           (1 - Math.abs(x) / (waveW / 2)) *
-          (mouse.current.active ? 1 + pull : 1);
+          (mouse.current.active ? 1 + pull : 1) *
+          (1 + audioLevel * 1.5);
         const px = cx + x + tiltX * 0.3;
         const py = cy + amp + tiltY * 0.3;
         if (x === -waveW / 2) ctx!.moveTo(px, py);
@@ -101,10 +118,10 @@ export default function SignalCore() {
       for (const n of nodes) {
         const a = n.angle + t * n.speed * 60;
         const wob = Math.sin(t * 1.3 + n.wobble) * 6;
-        const r = n.radius + wob + pull * 18;
+        const r = n.radius + wob + pull * 18 + audioLevel * 30;
         const x = cx + Math.cos(a) * r + tiltX;
         const y = cy + Math.sin(a) * r * 0.72 + tiltY;
-        pts.push({ x, y, size: n.size });
+        pts.push({ x, y, size: n.size + audioLevel * 2 });
       }
 
       ctx!.strokeStyle = "rgba(236, 230, 216, 0.08)";
@@ -129,7 +146,7 @@ export default function SignalCore() {
       }
 
       // center pulse
-      const pulse = 3 + Math.sin(t * 3) * 1.2;
+      const pulse = 3 + Math.sin(t * 3) * 1.2 + audioLevel * 6;
       ctx!.beginPath();
       ctx!.fillStyle = "rgba(255, 90, 31, 0.9)";
       ctx!.arc(cx + tiltX, cy + tiltY, pulse, 0, Math.PI * 2);

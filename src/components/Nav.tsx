@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useMode } from "@/lib/mode-context";
+import MiniPlayer from "@/components/music/MiniPlayer";
 
 const links = [
   { href: "/work", label: "WORK" },
@@ -36,6 +37,7 @@ export default function Nav() {
               {l.label}
             </Link>
           ))}
+          {mode === "explore" && <MiniPlayer />}
           <button
             onClick={() => setMode(mode === "explore" ? "direct" : "explore")}
             className="font-mono-label rounded-full border border-[var(--line)] px-3 py-1 text-[10px] text-[var(--ink-dim)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
@@ -71,6 +73,7 @@ export default function Nav() {
           >
             {mode === "explore" ? "EXPLORE MODE" : "DIRECT MODE"}
           </button>
+          {mode === "explore" && <MiniPlayer />}
         </nav>
       )}
     </header>
