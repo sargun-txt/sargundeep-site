@@ -1,4 +1,12 @@
-import { LOOP_SECONDS, STEP_SECONDS, midiToFreq } from "./scale";
+import {
+  BAR_SECONDS,
+  DEFAULT_LOOP_SECONDS,
+  MAX_RECORD_SECONDS,
+  STEP_SECONDS,
+  loopSecondsFor,
+  midiToFreq,
+} from "./scale";
+import { padChordsForLoop } from "./harmony";
 
 export type NoteEvent = {
   midi: number;
@@ -8,13 +16,9 @@ export type NoteEvent = {
 
 type Listener = () => void;
 
-// Half-time boom-bap feel over the 32-step (2 bar) loop.
-const KICK_STEPS = [0, 6, 16, 22];
-const SNARE_STEPS = [8, 24];
-const PAD_CHORDS: { time: number; notes: number[] }[] = [
-  { time: 0, notes: [48, 55, 59, 64] }, // Cmaj7
-  { time: LOOP_SECONDS / 2, notes: [45, 52, 55, 60] }, // Am7
-];
+// Half-time boom-bap feel, repeated every bar (16 steps).
+const KICK_STEPS = [0, 6];
+const SNARE_STEPS = [8];
 
 class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -29,12 +33,17 @@ class AudioEngine {
   private noiseBuffer: AudioBuffer | null = null;
 
   private loop: NoteEvent[] = [];
+  private loopSeconds = DEFAULT_LOOP_SECONDS;
   private isPlaying = false;
   private isMuted = false;
   private isRecording = false;
-  private lofi = false;
   private beats = false;
+  private lofiAmount = 0;
+  private beatLevel = 0.8;
+  private beatPitch = 0;
+  private transpose = 0;
   private recordStart = 0;
+  private recordTimeout: number | null = null;
   private recordedNotes: NoteEvent[] = [];
   private activeDowns = new Map<number, number>();
 
@@ -66,7 +75,7 @@ class AudioEngine {
     this.input.connect(this.lofiFilter);
     this.lofiFilter.connect(bus);
 
-    // Cheap tape-style echo/reverb tail
+    // Cheap tape-style echo tail
     const delay = ctx.createDelay(1);
     delay.delayTime.value = 0.19;
     const feedback = ctx.createGain();
@@ -79,7 +88,7 @@ class AudioEngine {
     delay.connect(this.reverbWet);
     this.reverbWet.connect(bus);
 
-    // White noise buffer: used for drums, and (with pops) for vinyl crackle
+    // White noise buffer: drums, and (with pops) vinyl crackle
     const rate = ctx.sampleRate;
     this.noiseBuffer = ctx.createBuffer(1, rate, rate);
     const nd = this.noiseBuffer.getChannelData(0);
@@ -124,16 +133,21 @@ class AudioEngine {
   private applyLofi() {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    const on = this.lofi;
-    this.lofiFilter!.frequency.setTargetAtTime(on ? 2400 : 20000, t, 0.05);
-    this.noiseGain!.gain.setTargetAtTime(on ? 1 : 0, t, 0.1);
-    this.reverbWet!.gain.setTargetAtTime(on ? 0.3 : 0, t, 0.1);
-    this.wobbleDepth!.gain.setTargetAtTime(on ? 9 : 0, t, 0.1);
-    if (on) {
+    const a = this.lofiAmount;
+    this.lofiFilter!.frequency.setTargetAtTime(
+      20000 * Math.pow(0.09, a),
+      t,
+      0.05
+    );
+    this.noiseGain!.gain.setTargetAtTime(a * 1.2, t, 0.1);
+    this.reverbWet!.gain.setTargetAtTime(0.35 * a, t, 0.1);
+    this.wobbleDepth!.gain.setTargetAtTime(12 * a, t, 0.1);
+    if (a > 0.02) {
+      const drive = 1 + a * 2.2;
       const curve = new Float32Array(1024);
       for (let i = 0; i < curve.length; i++) {
         const x = (i / (curve.length - 1)) * 2 - 1;
-        curve[i] = Math.tanh(x * 2.2) / Math.tanh(2.2);
+        curve[i] = Math.tanh(x * drive) / Math.tanh(drive);
       }
       this.shaper!.curve = curve;
     } else {
@@ -166,9 +180,13 @@ class AudioEngine {
       isPlaying: this.isPlaying,
       isMuted: this.isMuted,
       isRecording: this.isRecording,
-      lofi: this.lofi,
       beats: this.beats,
+      lofiAmount: this.lofiAmount,
+      beatLevel: this.beatLevel,
+      beatPitch: this.beatPitch,
+      transpose: this.transpose,
       loop: this.loop,
+      loopSeconds: this.loopSeconds,
     };
   }
 
@@ -176,8 +194,8 @@ class AudioEngine {
     const ctx = this.ensureContext();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = this.lofi ? "triangle" : "sine";
-    osc.frequency.value = midiToFreq(midi);
+    osc.type = this.lofiAmount > 0.2 ? "triangle" : "sine";
+    osc.frequency.value = midiToFreq(midi + this.transpose);
     this.wobbleDepth!.connect(osc.detune);
 
     const now = ctx.currentTime;
@@ -194,12 +212,16 @@ class AudioEngine {
     };
 
     if (this.isRecording && !fromLoop) {
-      const t = (ctx.currentTime - this.recordStart) % LOOP_SECONDS;
-      this.recordedNotes.push({ midi, time: t, duration });
+      this.recordedNotes.push({
+        midi,
+        time: ctx.currentTime - this.recordStart,
+        duration,
+      });
     }
   }
 
   private playPad(notes: number[], duration: number) {
+    if (this.lofiAmount < 0.05) return;
     const ctx = this.ensureContext();
     const now = ctx.currentTime;
     const padFilter = ctx.createBiquadFilter();
@@ -207,14 +229,14 @@ class AudioEngine {
     padFilter.frequency.value = 900;
     const padGain = ctx.createGain();
     padGain.gain.setValueAtTime(0, now);
-    padGain.gain.linearRampToValueAtTime(0.1, now + 0.35);
+    padGain.gain.linearRampToValueAtTime(0.04 + 0.1 * this.lofiAmount, now + 0.35);
     padGain.gain.linearRampToValueAtTime(0.0001, now + duration);
     padFilter.connect(padGain);
     padGain.connect(this.input!);
     for (const midi of notes) {
       const osc = ctx.createOscillator();
       osc.type = "triangle";
-      osc.frequency.value = midiToFreq(midi);
+      osc.frequency.value = midiToFreq(midi + this.transpose);
       this.wobbleDepth!.connect(osc.detune);
       osc.connect(padFilter);
       osc.start(now);
@@ -223,6 +245,10 @@ class AudioEngine {
         this.wobbleDepth?.disconnect(osc.detune);
       };
     }
+  }
+
+  private drumPitch(base: number) {
+    return base * Math.pow(2, this.beatPitch / 12);
   }
 
   private noiseHit(opts: {
@@ -237,10 +263,10 @@ class AudioEngine {
     src.buffer = this.noiseBuffer;
     const filter = ctx.createBiquadFilter();
     filter.type = opts.type;
-    filter.frequency.value = opts.freq;
+    filter.frequency.value = this.drumPitch(opts.freq);
     const g = ctx.createGain();
-    g.gain.setValueAtTime(opts.gain, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + opts.duration);
+    g.gain.setValueAtTime(Math.max(opts.gain * this.beatLevel, 0.0001), now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + opts.duration);
     src.connect(filter);
     filter.connect(g);
     g.connect(this.input!);
@@ -253,10 +279,10 @@ class AudioEngine {
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
-    osc.frequency.setValueAtTime(130, now);
-    osc.frequency.exponentialRampToValueAtTime(42, now + 0.14);
-    g.gain.setValueAtTime(0.9, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+    osc.frequency.setValueAtTime(this.drumPitch(130), now);
+    osc.frequency.exponentialRampToValueAtTime(this.drumPitch(42), now + 0.14);
+    g.gain.setValueAtTime(Math.max(0.9 * this.beatLevel, 0.0001), now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
     osc.connect(g);
     g.connect(this.input!);
     osc.start(now);
@@ -269,10 +295,10 @@ class AudioEngine {
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "triangle";
-    osc.frequency.value = 190;
+    osc.frequency.value = this.drumPitch(190);
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.25, now);
-    g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    g.gain.setValueAtTime(Math.max(0.25 * this.beatLevel, 0.0001), now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
     osc.connect(g);
     g.connect(this.input!);
     osc.start(now);
@@ -304,23 +330,35 @@ class AudioEngine {
     this.recordStart = ctx.currentTime;
     this.recordedNotes = [];
     this.emit();
-    window.setTimeout(() => {
-      if (this.isRecording) this.finishRecording();
-    }, LOOP_SECONDS * 1000);
+    this.recordTimeout = window.setTimeout(
+      () => this.finishRecording(),
+      MAX_RECORD_SECONDS * 1000
+    );
   }
 
   finishRecording() {
     if (!this.isRecording) return;
+    if (this.recordTimeout) window.clearTimeout(this.recordTimeout);
+    const elapsed = this.ctx ? this.ctx.currentTime - this.recordStart : 0;
     this.isRecording = false;
-    this.loop = [...this.recordedNotes];
+    const notes = [...this.recordedNotes].sort((a, b) => a.time - b.time);
+    if (notes.length === 0) {
+      this.emit();
+      return;
+    }
+    const lastEnd = Math.max(...notes.map((n) => n.time + 0.2));
+    this.stop();
+    this.loopSeconds = loopSecondsFor(Math.max(elapsed, lastEnd));
+    this.loop = notes;
     this.emit();
-    if (this.loop.length > 0) this.play();
+    this.play();
   }
 
-  setLoop(notes: NoteEvent[]) {
+  setLoop(notes: NoteEvent[], loopSeconds?: number) {
     const wasPlaying = this.isPlaying;
     this.stop();
     this.loop = notes;
+    if (loopSeconds !== undefined) this.loopSeconds = loopSeconds;
     this.emit();
     if (wasPlaying || (notes.length > 0 && this.beats)) this.play();
   }
@@ -328,6 +366,7 @@ class AudioEngine {
   clearLoop() {
     this.stop();
     this.loop = [];
+    this.loopSeconds = DEFAULT_LOOP_SECONDS;
     this.emit();
     if (this.beats) this.play();
   }
@@ -349,39 +388,43 @@ class AudioEngine {
     this.scheduledTimers.forEach((t) => window.clearTimeout(t));
     this.scheduledTimers = [];
 
+    const bars = Math.round(this.loopSeconds / BAR_SECONDS);
+
     for (const n of this.loop) {
       this.at(n.time, () => this.playNote(n.midi, n.duration, true));
     }
 
     if (this.beats) {
-      for (const s of KICK_STEPS) {
-        this.at(s * STEP_SECONDS + (Math.random() - 0.5) * 0.012, () =>
-          this.playKick()
-        );
-      }
-      for (const s of SNARE_STEPS) {
-        this.at(s * STEP_SECONDS + (Math.random() - 0.5) * 0.012, () =>
-          this.playSnare()
-        );
-      }
-      for (let s = 0; s < 32; s += 2) {
-        const swing = s % 4 === 2 ? 0.03 : 0;
-        const velocity = s % 4 === 0 ? 1 : 0.55 + Math.random() * 0.2;
-        this.at(s * STEP_SECONDS + swing, () => this.playHat(velocity));
+      for (let b = 0; b < bars; b++) {
+        const base = b * BAR_SECONDS;
+        for (const s of KICK_STEPS) {
+          this.at(base + s * STEP_SECONDS + (Math.random() - 0.5) * 0.012, () =>
+            this.playKick()
+          );
+        }
+        for (const s of SNARE_STEPS) {
+          this.at(base + s * STEP_SECONDS + (Math.random() - 0.5) * 0.012, () =>
+            this.playSnare()
+          );
+        }
+        for (let s = 0; s < 16; s += 2) {
+          const swing = s % 4 === 2 ? 0.03 : 0;
+          const velocity = s % 4 === 0 ? 1 : 0.55 + Math.random() * 0.2;
+          this.at(base + s * STEP_SECONDS + swing, () => this.playHat(velocity));
+        }
       }
     }
 
-    if (this.lofi) {
-      for (const chord of PAD_CHORDS) {
-        this.at(chord.time, () =>
-          this.playPad(chord.notes, LOOP_SECONDS / 2 - 0.05)
-        );
-      }
+    const chords = padChordsForLoop(this.loop);
+    for (let b = 0; b < bars; b++) {
+      this.at(b * BAR_SECONDS, () =>
+        this.playPad(chords[b % 2], BAR_SECONDS - 0.05)
+      );
     }
 
     this.loopTimer = window.setTimeout(() => {
       if (this.isPlaying) this.scheduleLoopCycle();
-    }, LOOP_SECONDS * 1000);
+    }, this.loopSeconds * 1000);
   }
 
   stop() {
@@ -400,15 +443,26 @@ class AudioEngine {
     this.emit();
   }
 
-  toggleLofi() {
+  setLofi(amount: number) {
     this.ensureContext();
-    this.lofi = !this.lofi;
+    this.lofiAmount = Math.min(1, Math.max(0, amount));
     this.applyLofi();
     this.emit();
-    if (this.isPlaying) {
-      this.stop();
-      this.play();
-    }
+  }
+
+  setBeatLevel(level: number) {
+    this.beatLevel = Math.min(1, Math.max(0, level));
+    this.emit();
+  }
+
+  setBeatPitch(semitones: number) {
+    this.beatPitch = Math.min(12, Math.max(-12, semitones));
+    this.emit();
+  }
+
+  setTranspose(semitones: number) {
+    this.transpose = Math.min(12, Math.max(-12, semitones));
+    this.emit();
   }
 
   toggleBeats() {

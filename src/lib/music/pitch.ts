@@ -1,5 +1,5 @@
 import type { NoteEvent } from "./engine";
-import { LOOP_SECONDS, SCALE_MIDI } from "./scale";
+import { MAX_RECORD_SECONDS, loopSecondsFor } from "./scale";
 import { smoothRuleBased } from "./smooth";
 
 const FRAME_MS = 30;
@@ -49,12 +49,6 @@ export function detectPitch(buf: Float32Array, sampleRate: number): number | nul
   return null;
 }
 
-function snapToScale(midi: number): number {
-  return SCALE_MIDI.reduce((closest, m) =>
-    Math.abs(m - midi) < Math.abs(closest - midi) ? m : closest
-  );
-}
-
 function median3(values: (number | null)[], i: number): number | null {
   const w = [values[i - 1], values[i], values[i + 1]].filter(
     (v): v is number => v != null
@@ -63,27 +57,47 @@ function median3(values: (number | null)[], i: number): number | null {
   return [...w].sort((a, b) => a - b)[Math.floor(w.length / 2)];
 }
 
+const MAJOR = [0, 2, 4, 5, 7, 9, 11];
+
+// Fit the hum to whichever major/relative-minor key it already mostly sits
+// in, then nudge only the stray notes. Keeps the player's own pitches.
+export function snapToBestKey(notes: NoteEvent[]): NoteEvent[] {
+  if (notes.length === 0) return notes;
+  let bestRoot = 0;
+  let bestScore = -1;
+  for (let root = 0; root < 12; root++) {
+    const inKey = new Set(MAJOR.map((i) => (root + i) % 12));
+    const score = notes.reduce(
+      (sum, n) => sum + (inKey.has(((n.midi % 12) + 12) % 12) ? n.duration : 0),
+      0
+    );
+    if (score > bestScore) {
+      bestScore = score;
+      bestRoot = root;
+    }
+  }
+  const inKey = new Set(MAJOR.map((i) => (bestRoot + i) % 12));
+  return notes.map((n) => {
+    for (const d of [0, -1, 1, -2, 2]) {
+      if (inKey.has((((n.midi + d) % 12) + 12) % 12)) {
+        return { ...n, midi: n.midi + d };
+      }
+    }
+    return n;
+  });
+}
+
 export function framesToNotes(
   frames: { t: number; midi: number | null }[]
 ): NoteEvent[] {
   const raw = frames.map((f) => f.midi);
   const smoothed = raw.map((_, i) => median3(raw, i));
-  const voiced = smoothed.filter((v): v is number => v != null);
-  if (voiced.length === 0) return [];
-
-  // Shift the whole hum by octaves so it sits in the instrument's range.
-  const sortedVoiced = [...voiced].sort((a, b) => a - b);
-  const median = sortedVoiced[Math.floor(sortedVoiced.length / 2)];
-  const shift = 12 * Math.round((70 - median) / 12);
-
-  const snapped = smoothed.map((m) =>
-    m == null ? null : snapToScale(Math.min(81, Math.max(60, m + shift)))
-  );
 
   const notes: NoteEvent[] = [];
   let start = -1;
   let pitch = 0;
   let gap = 0;
+  let lastVoiced = -1;
   const frameSec = FRAME_MS / 1000;
 
   const close = (endIdx: number) => {
@@ -96,14 +110,11 @@ export function framesToNotes(
     start = -1;
   };
 
-  let lastVoiced = -1;
-  for (let i = 0; i < snapped.length; i++) {
-    const m = snapped[i];
+  for (let i = 0; i < smoothed.length; i++) {
+    const m = smoothed[i];
     if (m == null) {
       gap++;
-      if (start >= 0 && gap > 2) {
-        close(lastVoiced);
-      }
+      if (start >= 0 && gap > 2) close(lastVoiced);
       continue;
     }
     gap = 0;
@@ -120,11 +131,14 @@ export function framesToNotes(
 
 export class MicError extends Error {}
 
-// Records LOOP_SECONDS of mic audio, tracks the pitch, and returns a scale-
-// locked melody. Nothing leaves the browser; the audio is never stored.
-export async function humToMelody(
-  onListening?: () => void
-): Promise<NoteEvent[]> {
+// Listens until `stopSignal` aborts or MAX_RECORD_SECONDS pass, tracks the
+// pitch, and returns the melody at its real pitch. Nothing leaves the
+// browser; the audio is never stored.
+export async function humToMelody(opts: {
+  stopSignal: AbortSignal;
+  snapToKey: boolean;
+  onListening?: () => void;
+}): Promise<{ notes: NoteEvent[]; loopSeconds: number }> {
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -138,7 +152,7 @@ export async function humToMelody(
     throw new MicError("Microphone access was blocked.");
   }
 
-  onListening?.();
+  opts.onListening?.();
 
   const Ctx =
     window.AudioContext ||
@@ -153,17 +167,18 @@ export async function humToMelody(
   const buf = new Float32Array(analyser.fftSize);
   const frames: { t: number; midi: number | null }[] = [];
   const start = performance.now();
+  let elapsed = 0;
 
   await new Promise<void>((resolve) => {
     const id = window.setInterval(() => {
-      const t = (performance.now() - start) / 1000;
+      elapsed = (performance.now() - start) / 1000;
       analyser.getFloatTimeDomainData(buf);
       const f = detectPitch(buf, ctx.sampleRate);
       frames.push({
-        t,
+        t: elapsed,
         midi: f == null ? null : Math.round(69 + 12 * Math.log2(f / 440)),
       });
-      if (t >= LOOP_SECONDS) {
+      if (elapsed >= MAX_RECORD_SECONDS || opts.stopSignal.aborted) {
         window.clearInterval(id);
         resolve();
       }
@@ -173,5 +188,20 @@ export async function humToMelody(
   stream.getTracks().forEach((tr) => tr.stop());
   await ctx.close();
 
-  return smoothRuleBased(framesToNotes(frames));
+  let notes = framesToNotes(frames);
+  // Keep every note in a comfortable, audible range without changing its
+  // pitch class (fold by octaves only).
+  notes = notes.map((n) => {
+    let midi = n.midi;
+    while (midi < 48) midi += 12;
+    while (midi > 84) midi -= 12;
+    return { ...n, midi };
+  });
+  if (opts.snapToKey) notes = snapToBestKey(notes);
+
+  const lastEnd = notes.length
+    ? Math.max(...notes.map((n) => n.time + n.duration))
+    : 0;
+  const loopSeconds = loopSecondsFor(Math.max(elapsed, lastEnd));
+  return { notes: smoothRuleBased(notes, loopSeconds), loopSeconds };
 }

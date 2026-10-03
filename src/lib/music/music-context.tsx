@@ -9,27 +9,25 @@ import {
 } from "react";
 import { audioEngine, type NoteEvent } from "./engine";
 
-const STORAGE_KEY = "music-loop-v1";
+const STORAGE_KEY = "music-loop-v2";
+const LEGACY_KEY = "music-loop-v1";
 
-type MusicState = {
-  isPlaying: boolean;
-  isMuted: boolean;
-  isRecording: boolean;
-  lofi: boolean;
-  beats: boolean;
-  loop: NoteEvent[];
-};
+type MusicState = ReturnType<typeof audioEngine.getState>;
 
 const MusicContext = createContext<{
   state: MusicState;
   startRecording: () => void;
+  stopRecording: () => void;
   play: () => void;
   stop: () => void;
   toggleMute: () => void;
-  toggleLofi: () => void;
   toggleBeats: () => void;
+  setLofi: (v: number) => void;
+  setBeatLevel: (v: number) => void;
+  setBeatPitch: (v: number) => void;
+  setTranspose: (v: number) => void;
   clearLoop: () => void;
-  setLoop: (notes: NoteEvent[]) => void;
+  setLoop: (notes: NoteEvent[], loopSeconds?: number) => void;
 } | null>(null);
 
 export function MusicProvider({ children }: { children: React.ReactNode }) {
@@ -40,16 +38,27 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setState(audioEngine.getState())
     );
 
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      try {
-        const notes = JSON.parse(raw) as NoteEvent[];
-        if (Array.isArray(notes) && notes.length > 0) {
-          audioEngine.setLoop(notes);
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as {
+          notes: NoteEvent[];
+          loopSeconds: number;
+        };
+        if (Array.isArray(saved.notes) && saved.notes.length > 0) {
+          audioEngine.setLoop(saved.notes, saved.loopSeconds);
         }
-      } catch {
-        // ignore malformed storage
+      } else {
+        const legacy = window.localStorage.getItem(LEGACY_KEY);
+        if (legacy) {
+          const notes = JSON.parse(legacy) as NoteEvent[];
+          if (Array.isArray(notes) && notes.length > 0) {
+            audioEngine.setLoop(notes, 4);
+          }
+        }
       }
+    } catch {
+      // ignore malformed storage
     }
 
     return () => {
@@ -59,32 +68,48 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (state.loop.length > 0) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state.loop));
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ notes: state.loop, loopSeconds: state.loopSeconds })
+      );
     }
-  }, [state.loop]);
+  }, [state.loop, state.loopSeconds]);
 
   const startRecording = useCallback(() => audioEngine.startRecording(), []);
+  const stopRecording = useCallback(() => audioEngine.finishRecording(), []);
   const play = useCallback(() => audioEngine.play(), []);
   const stop = useCallback(() => audioEngine.stop(), []);
   const toggleMute = useCallback(() => audioEngine.toggleMute(), []);
-  const toggleLofi = useCallback(() => audioEngine.toggleLofi(), []);
   const toggleBeats = useCallback(() => audioEngine.toggleBeats(), []);
+  const setLofi = useCallback((v: number) => audioEngine.setLofi(v), []);
+  const setBeatLevel = useCallback((v: number) => audioEngine.setBeatLevel(v), []);
+  const setBeatPitch = useCallback((v: number) => audioEngine.setBeatPitch(v), []);
+  const setTranspose = useCallback((v: number) => audioEngine.setTranspose(v), []);
   const clearLoop = useCallback(() => {
     audioEngine.clearLoop();
     window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_KEY);
   }, []);
-  const setLoop = useCallback((notes: NoteEvent[]) => audioEngine.setLoop(notes), []);
+  const setLoop = useCallback(
+    (notes: NoteEvent[], loopSeconds?: number) =>
+      audioEngine.setLoop(notes, loopSeconds),
+    []
+  );
 
   return (
     <MusicContext.Provider
       value={{
         state,
         startRecording,
+        stopRecording,
         play,
         stop,
         toggleMute,
-        toggleLofi,
         toggleBeats,
+        setLofi,
+        setBeatLevel,
+        setBeatPitch,
+        setTranspose,
         clearLoop,
         setLoop,
       }}
