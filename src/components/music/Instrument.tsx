@@ -6,11 +6,25 @@ import { audioEngine } from "@/lib/music/engine";
 import { KEY_MAP, SCALE_MIDI, LOOP_SECONDS } from "@/lib/music/scale";
 import { smoothRuleBased } from "@/lib/music/smooth";
 import { isWebGLAvailable, preloadAI, smoothWithAI } from "@/lib/music/magenta";
+import { humToMelody } from "@/lib/music/pitch";
 
 const KEY_LABELS = Object.keys(KEY_MAP);
 
 export default function Instrument() {
-  const { state, startRecording, play, stop, clearLoop, setLoop } = useMusic();
+  const {
+    state,
+    startRecording,
+    play,
+    stop,
+    clearLoop,
+    setLoop,
+    toggleLofi,
+    toggleBeats,
+  } = useMusic();
+  const [humStatus, setHumStatus] = useState<
+    "idle" | "listening" | "empty" | "blocked"
+  >("idle");
+  const [humProgress, setHumProgress] = useState(0);
   const [activeKeys, setActiveKeys] = useState<Set<number>>(new Set());
   const [recordProgress, setRecordProgress] = useState(0);
   const [preSmoothLoop, setPreSmoothLoop] = useState<typeof state.loop | null>(
@@ -94,6 +108,35 @@ export default function Instrument() {
     setLoop(smoothRuleBased(state.loop));
   }
 
+  async function handleHum() {
+    setHumStatus("idle");
+    setPreSmoothLoop(null);
+    let tick: number | undefined;
+    try {
+      const notes = await humToMelody(() => {
+        setHumStatus("listening");
+        const start = performance.now();
+        tick = window.setInterval(() => {
+          setHumProgress(
+            Math.min(1, (performance.now() - start) / 1000 / LOOP_SECONDS)
+          );
+        }, 50);
+      });
+      if (notes.length === 0) {
+        setHumStatus("empty");
+        return;
+      }
+      setLoop(notes);
+      play();
+      setHumStatus("idle");
+    } catch {
+      setHumStatus("blocked");
+    } finally {
+      if (tick) window.clearInterval(tick);
+      setHumProgress(0);
+    }
+  }
+
   async function handleSmoothAI() {
     setPreSmoothLoop(state.loop);
     setAiStatus("loading");
@@ -140,6 +183,63 @@ export default function Instrument() {
         Play with the keys above, or your keyboard (A S D F G H J K L ;). Every
         note is in key — nothing you play can sound wrong.
       </p>
+
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        {humStatus === "listening" ? (
+          <div className="flex items-center gap-3">
+            <div className="h-2 w-40 overflow-hidden rounded-full bg-[var(--bg-raised)]">
+              <div
+                className="h-full bg-[var(--accent)]"
+                style={{ width: `${humProgress * 100}%` }}
+              />
+            </div>
+            <span className="font-mono-label text-[11px] text-[var(--accent)]">
+              LISTENING — HUM OR WHISTLE
+            </span>
+          </div>
+        ) : (
+          <button
+            onClick={handleHum}
+            disabled={state.isRecording}
+            className="rounded-full border border-[var(--line)] px-5 py-2.5 text-sm text-[var(--ink)] disabled:opacity-50"
+            title="Hum or whistle for 4 seconds; it becomes a melody. Audio stays in your browser."
+          >
+            Hum a melody
+          </button>
+        )}
+        <button
+          onClick={toggleBeats}
+          aria-pressed={state.beats}
+          className={`rounded-full border px-5 py-2.5 text-sm ${
+            state.beats
+              ? "border-[var(--accent)] text-[var(--accent)]"
+              : "border-[var(--line)] text-[var(--ink)]"
+          }`}
+        >
+          {state.beats ? "Beat on" : "Add a beat"}
+        </button>
+        <button
+          onClick={toggleLofi}
+          aria-pressed={state.lofi}
+          className={`rounded-full border px-5 py-2.5 text-sm ${
+            state.lofi
+              ? "border-[var(--accent)] text-[var(--accent)]"
+              : "border-[var(--line)] text-[var(--ink)]"
+          }`}
+        >
+          {state.lofi ? "Lofi on" : "Make it lofi"}
+        </button>
+        {humStatus === "empty" && (
+          <span className="font-mono-label text-[11px] text-[var(--ink-faint)]">
+            Didn&apos;t catch a clear pitch — try humming louder and steadier.
+          </span>
+        )}
+        {humStatus === "blocked" && (
+          <span className="font-mono-label text-[11px] text-[var(--ink-faint)]">
+            Microphone unavailable or blocked in your browser.
+          </span>
+        )}
+      </div>
 
       <div className="flex flex-wrap items-center gap-3">
         {!state.isRecording ? (

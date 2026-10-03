@@ -15,6 +15,8 @@ type MusicState = {
   isPlaying: boolean;
   isMuted: boolean;
   isRecording: boolean;
+  lofi: boolean;
+  beats: boolean;
   loop: NoteEvent[];
 };
 
@@ -24,6 +26,8 @@ const MusicContext = createContext<{
   play: () => void;
   stop: () => void;
   toggleMute: () => void;
+  toggleLofi: () => void;
+  toggleBeats: () => void;
   clearLoop: () => void;
   setLoop: (notes: NoteEvent[]) => void;
 } | null>(null);
@@ -63,6 +67,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const play = useCallback(() => audioEngine.play(), []);
   const stop = useCallback(() => audioEngine.stop(), []);
   const toggleMute = useCallback(() => audioEngine.toggleMute(), []);
+  const toggleLofi = useCallback(() => audioEngine.toggleLofi(), []);
+  const toggleBeats = useCallback(() => audioEngine.toggleBeats(), []);
   const clearLoop = useCallback(() => {
     audioEngine.clearLoop();
     window.localStorage.removeItem(STORAGE_KEY);
@@ -71,7 +77,17 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <MusicContext.Provider
-      value={{ state, startRecording, play, stop, toggleMute, clearLoop, setLoop }}
+      value={{
+        state,
+        startRecording,
+        play,
+        stop,
+        toggleMute,
+        toggleLofi,
+        toggleBeats,
+        clearLoop,
+        setLoop,
+      }}
     >
       {children}
     </MusicContext.Provider>

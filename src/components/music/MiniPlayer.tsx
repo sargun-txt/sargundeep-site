@@ -5,7 +5,7 @@ import { useMusic } from "@/lib/music/music-context";
 export default function MiniPlayer() {
   const { state, play, stop, toggleMute } = useMusic();
 
-  if (state.loop.length === 0) return null;
+  if (state.loop.length === 0 && !state.beats) return null;
 
   return (
     <div className="flex items-center gap-2">
